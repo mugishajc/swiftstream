@@ -1,0 +1,78 @@
+# Clickstream processing pipeline
+# Consumes user click events, filters bots, enriches with metadata,
+# deduplicates, and writes to PostgreSQL and S3.
+
+name: clickstream-pipeline
+
+input_topics:
+  - user-clicks
+  - page-views
+
+kafka:
+  bootstrap_servers: localhost:9092
+  group_id: clickstream-consumers
+  auto_offset_reset: earliest
+  enable_auto_commit: false
+
+transforms:
+  - name: drop-bots
+    type: filter
+    params:
+      field: user_agent
+      op: not_in
+      value: ["Googlebot", "Bingbot", "YandexBot"]
+
+  - name: add-metadata
+    type: enrich
+    params:
+      static_fields:
+        pipeline_version: "1.0"
+        environment: production
+      computed_fields:
+        processed_at: timestamp_iso
+        origin_topic: source_topic
+
+  - name: dedup-clicks
+    type: deduplicate
+    params:
+      key_fields: ["user_id", "page_url", "timestamp"]
+      ttl_seconds: 300
+
+sinks:
+  - name: postgres-events
+    type: postgres
+
+  - name: s3-archive
+    type: s3
+
+postgres:
+  host: localhost
+  port: 5432
+  database: clickstream
+  user: pipeline
+  password: "${POSTGRES_PASSWORD}"
+  table: click_events
+  batch_size: 200
+
+s3:
+  endpoint_url: http://localhost:9000
+  bucket: clickstream-archive
+  prefix: raw/clicks/
+  access_key: minioadmin
+  secret_key: minioadmin
+  batch_size: 5000
+
+dead_letter:
+  topic: clickstream-dlq
+  max_retries: 3
+
+metrics:
+  enabled: true
+  port: 9090
+
+health:
+  enabled: true
+  port: 8080
+
+backpressure_max_buffered: 50000
+shutdown_timeout_seconds: 30

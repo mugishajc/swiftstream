@@ -1,0 +1,65 @@
+# IoT sensor data pipeline
+# Consumes sensor readings, filters invalid values,
+# aggregates per device per minute, and writes to stdout for debugging.
+
+name: iot-sensor-pipeline
+
+input_topics:
+  - sensor-readings
+
+kafka:
+  bootstrap_servers: localhost:9092
+  group_id: iot-processors
+  auto_offset_reset: latest
+
+transforms:
+  - name: filter-invalid
+    type: filter
+    params:
+      field: temperature
+      op: gte
+      value: -50
+
+  - name: filter-max
+    type: filter
+    params:
+      field: temperature
+      op: lte
+      value: 150
+
+  - name: add-ingestion-time
+    type: enrich
+    params:
+      computed_fields:
+        ingested_at: processing_timestamp_ms
+
+  - name: minute-aggregates
+    type: aggregate
+    params:
+      group_by: device_id
+      window_seconds: 60
+      aggregations:
+        - field: temperature
+          function: avg
+        - field: temperature
+          function: min
+        - field: temperature
+          function: max
+        - field: "*"
+          function: count
+
+sinks:
+  - name: debug-output
+    type: stdout
+
+dead_letter:
+  topic: iot-dlq
+  max_retries: 5
+
+metrics:
+  enabled: true
+  port: 9091
+
+health:
+  enabled: true
+  port: 8081
